@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Colis</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b3a53; font-family: system-ui, sans-serif; }
+    canvas { display: block; }
+    #hud { position: fixed; left: 14px; top: 12px; color: #fff; font-size: 13px; line-height: 1.5;
+           text-shadow: 0 1px 3px rgba(0,0,0,.6); pointer-events: none; user-select: none; }
+    #hud b { font-size: 15px; }
+    #hud .dim { opacity: .75; }
+  </style>
+</head>
+<body>
+  <div id="hud"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
