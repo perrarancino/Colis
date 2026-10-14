@@ -1,76 +1,49 @@
 # Colis
 
-A small Three.js game base: you are a cube, seen from above, walking around a
-procedurally generated island in the middle of the ocean.
+## Как делать коммиты через Easy Git
 
-```bash
-npm install
-npm run dev      # http://localhost:5173
-```
+Программа лежит в [`easygit/dist/EasyGit.exe`](easygit/dist/EasyGit.exe). Установка не нужна, git и .NET тоже: просто запусти файл.
 
-| Key | Action |
-| --- | --- |
-| `W A S D` / arrows | move |
-| `Shift` | sprint |
-| mouse wheel | zoom |
-| `R` | generate a new island |
+### Первая настройка (один раз)
 
-The seed is kept in the URL (`?seed=123` or any text), so a link always shows the same island.
+1. **FOLDER** — нажми **Browse…** и выбери папку проекта.
+2. **GITHUB REPOSITORY** — впиши репозиторий: `perrarancino/Colis` или ссылку на него.
+3. **ACCOUNT** — нажми **Get token**. Откроется GitHub: создай токен с правом `repo`, скопируй его, вставь в поле и нажми **Sign in**. После входа в этом месте появится «Signed in as …».
 
-## How it is put together
+Токен хранится на твоём компьютере в зашифрованном виде, повторно вводить его не нужно.
 
-| File | What it does |
-| --- | --- |
-| `src/noise.js`, `src/random.js` | seeded simplex noise, PRNG and math helpers |
-| `src/island.js` | height function (warped radial falloff + fBm + ridged hills), flat-shaded terrain mesh, instanced trees and rocks, collision circles |
-| `src/ocean.js` | animated translucent sea that follows the player |
-| `src/player.js` | the cube: acceleration, sliding collisions, wading (slower in shallows, blocked in deep water), hop / squash animation |
-| `src/minimap.js` | corner map drawn from the same height function |
-| `src/main.js` | renderer, lighting and shadows, follow camera, game loop |
+### Коммит вручную
 
----
+1. Поменяй файлы в папке проекта как обычно.
+2. *(Необязательно)* впиши текст коммита в поле **COMMIT MESSAGE**. Если оставить пустым, сообщением станет время коммита, например `2026-10-14 20:57:40`. Введённый текст используется только для одного коммита, потом поле очищается.
+3. Нажми зелёную кнопку **Commit**.
 
-# Easy Git
+Внизу появится результат:
 
-`easygit/` contains a tiny Windows program that keeps a folder in sync with a GitHub
-repository — no Git, .NET or any other runtime needed (a single ~6 MB `EasyGit.exe`).
+- `Committed at 21:04 — committed 1 (4c468b0)` — коммит создан и отправлен на GitHub;
+- `Nothing to commit, no local changes` — коммитить нечего, файлы не менялись.
 
-**Download:** [`easygit/dist/EasyGit.exe`](easygit/dist/EasyGit.exe)
+Все изменённые, новые и удалённые файлы уходят одним коммитом. Загружаются только изменённые файлы, а не весь проект.
 
-1. Choose the project folder.
-2. Enter the repository (`owner/name` or its URL).
-3. Sign in: press **Get token**, create a token with the `repo` scope, paste it, press **Sign in**.
-   The token is stored encrypted with Windows DPAPI (only your Windows account can read it).
-4. Press **Sync** to pull, **Commit** to commit, or tick **Auto-commit every N min**.
+### Автоматические коммиты по таймеру
 
-What it does:
+Поставь галочку **Auto-commit every [10] min** и при желании поменяй число минут. Раз в это время программа сама сделает коммит со всеми накопившимися изменениями. Если за это время ничего не менялось, коммита не будет.
 
-- **Sync** — downloads what is new on GitHub (only the changed files) and tells you how many local
-  changes are still waiting to be committed. It never creates a commit.
-- **Commit** — pulls first, then uploads your local changes as one commit. If there is nothing to
-  commit it says so ("Nothing to commit, no local changes").
-- **Sync with GitHub when the program starts** (on by default) — a Sync as soon as Easy Git launches.
-- **Auto-commit every N min** (default 10, tick the box to enable) — on that timer your changes are
-  committed in one commit, and GitHub is polled every 45 s with a conditional request so commits
-  made elsewhere are pulled automatically. The timer only pulls in between; it never commits earlier.
-  With the box unticked nothing happens until you press the button.
-- **Commit message** — if the field is empty the message is simply the time of the commit
-  (`2026-10-14 20:57:40`). A message you type is used for the next commit only.
-- **Only the differences travel.** Files are compared by their Git blob hash; unchanged files are
-  never downloaded or uploaded again. A pull fetches just the changed blobs, a commit uploads just the
-  changed files as a single commit.
-- A real three-way comparison (local / last sync / GitHub). If the same file changed on both sides,
-  GitHub's version wins and yours is kept next to it as `name.conflict-<time>.ext`.
-- Text files are compared with CRLF turned into LF (like Git's `autocrlf`), so a Windows checkout is not
-  seen as modified and is committed with LF line endings.
-- `.gitignore` is respected. `.git`, `*.conflict-*` and temporary files are never synced.
-- Optional: start with Windows, keep running in the tray.
+Кнопка **Commit** при этом работает как обычно, ждать таймер не нужно.
 
-It talks to the GitHub REST API directly, which is why it does not need Git installed. Because of that
-it does not touch a local `.git` folder — use either Easy Git or `git` for a given folder, not both.
-Files above 95 MB are skipped.
+### Забрать изменения с GitHub
 
-Command line (for scripts): `EasyGit.exe --cli --dir C:\project --repo owner/name [--branch main] [--msg "text"] [--token-env VAR]`
-(build the console variant without `-H=windowsgui` to see its output).
+Кнопка **Sync** скачивает то, что появилось на GitHub, и ничего не коммитит. Она же показывает, сколько локальных изменений ещё не закоммичено:
+`Up to date with GitHub · 1 local change(s) not committed yet`.
 
-Build from source (needs Go 1.25+): `powershell -ExecutionPolicy Bypass -File easygit/build.ps1`
+Если включена галочка **Sync with GitHub when the program starts** (по умолчанию включена), Sync выполняется сам при запуске программы.
+
+### Если файл изменили и у тебя, и на GitHub
+
+Побеждает версия с GitHub, а твоя сохраняется рядом под именем `файл.conflict-дата-время.расширение`. Открой её и перенеси нужное вручную. Такие файлы в коммиты не попадают.
+
+### Что не коммитится
+
+- файлы и папки из `.gitignore` (например, `node_modules`);
+- папка `.git`, файлы `*.conflict-*` и временные файлы;
+- файлы больше 95 МБ.
