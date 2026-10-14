@@ -68,6 +68,9 @@ type Engine struct {
 	Branch string
 	Log    func(string)
 
+	// PullOnly downloads GitHub's changes but never creates a commit.
+	PullOnly bool
+
 	gh    *GitHub
 	state *State
 	mu    sync.Mutex // one sync at a time
@@ -85,7 +88,8 @@ func (e *Engine) fullName() string { return e.Owner + "/" + e.Repo }
 
 type localFile struct {
 	abs   string
-	sha   string
+	sha   string // identity used for comparing with GitHub (see pickHash)
+	raw   string
 	size  int64
 	mtime int64
 }
@@ -253,7 +257,7 @@ func (e *Engine) reconcile(res SyncResult, base, remote map[string]Entry, messag
 	}
 
 	// 3. Commit local changes.
-	if len(pushes)+len(deletes) == 0 {
+	if e.PullOnly || len(pushes)+len(deletes) == 0 {
 		return res, nil
 	}
 	commit, err := e.push(pushes, deletes, remote, message)
@@ -291,7 +295,9 @@ func (e *Engine) push(pushes map[string]*localFile, deletes []string, remote map
 		if err != nil {
 			return "", fmt.Errorf("cannot read %s: %w", p, err)
 		}
-		sum := blobSHA(data) // re-hash: the file may have changed since the scan
+		lf.raw = blobSHA(data)
+		data = canonicalize(data) // CRLF -> LF, like git's autocrlf
+		sum := blobSHA(data)      // re-hash: the file may have changed since the scan
 		lf.sha = sum
 		mode := remote[p].Mode
 		if mode == "" {
@@ -350,7 +356,7 @@ func (e *Engine) push(pushes map[string]*localFile, deletes []string, remote map
 	}
 
 	if message == "" {
-		message = autoMessage(added, updated, deletes)
+		message = timeMessage()
 	}
 	tree, err := e.gh.CreateTree(st.Tree, entries)
 	if err != nil {
@@ -366,7 +372,7 @@ func (e *Engine) push(pushes map[string]*localFile, deletes []string, remote map
 	st.Head, st.Tree, st.Base = commit, tree, newBase
 	for p, lf := range pushes {
 		if info, err := os.Stat(lf.abs); err == nil {
-			st.Cache[p] = FileCache{MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: lf.sha}
+			st.Cache[p] = FileCache{MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: lf.sha, Raw: lf.raw}
 		}
 	}
 	for _, p := range deletes {
@@ -471,16 +477,20 @@ func (e *Engine) scanLocal(remote map[string]Entry) (map[string]*localFile, erro
 			return nil
 		}
 		lf := &localFile{abs: p, size: info.Size(), mtime: info.ModTime().UnixNano()}
-		if c, ok := cache[rel]; ok && c.MTime == lf.mtime && c.Size == lf.size {
-			lf.sha = c.SHA
-		} else {
-			sha, err := hashFile(p, lf.size)
+		c, ok := cache[rel]
+		if !ok || c.MTime != lf.mtime || c.Size != lf.size {
+			raw, canon, err := hashLocal(p, lf.size)
 			if err != nil {
 				return nil // locked or changing right now; picked up next time
 			}
-			lf.sha = sha
-			cache[rel] = FileCache{MTime: lf.mtime, Size: lf.size, SHA: sha}
+			c = FileCache{MTime: lf.mtime, Size: lf.size, SHA: canon, Raw: raw}
+			cache[rel] = c
 		}
+		if c.Raw == "" {
+			c.Raw = c.SHA
+		}
+		lf.raw = c.Raw
+		lf.sha = e.pickHash(rel, c.Raw, c.SHA, remote)
 		seen[rel] = true
 		out[rel] = lf
 		return nil
@@ -506,6 +516,52 @@ func blobSHA(data []byte) string {
 	fmt.Fprintf(h, "blob %d\x00", len(data))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// pickHash decides which hash represents a file. Text files are compared with
+// CRLF turned into LF (what Git does with core.autocrlf=true), so a Windows
+// checkout is not mistaken for a modified file. If GitHub itself stores the
+// CRLF bytes, the raw hash is used so those files stay in sync as they are.
+func (e *Engine) pickHash(rel, raw, canon string, remote map[string]Entry) string {
+	if raw == canon {
+		return canon
+	}
+	if remote[rel].SHA == raw || e.state.Base[rel].SHA == raw {
+		return raw
+	}
+	return canon
+}
+
+// canonicalize converts CRLF to LF in text files (no NUL byte in the first 8 KB).
+func canonicalize(data []byte) []byte {
+	head := data
+	if len(head) > 8000 {
+		head = head[:8000]
+	}
+	if bytes.IndexByte(head, 0) >= 0 || !bytes.Contains(data, []byte("\r\n")) {
+		return data
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+}
+
+const maxTextHash = 16 << 20 // larger files are hashed as-is, streaming
+
+// hashLocal returns the hash of the bytes on disk and of their canonical form.
+func hashLocal(path string, size int64) (raw, canon string, err error) {
+	if size > maxTextHash {
+		raw, err = hashFile(path, size)
+		return raw, raw, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	raw = blobSHA(data)
+	canon = raw
+	if n := canonicalize(data); len(n) != len(data) {
+		canon = blobSHA(n)
+	}
+	return raw, canon, nil
 }
 
 func hashFile(path string, size int64) (string, error) {
@@ -557,7 +613,7 @@ func (e *Engine) download(paths []string, remote map[string]Entry) error {
 		}
 		if info, err := os.Stat(dst); err == nil {
 			mu.Lock()
-			e.state.Cache[p] = FileCache{MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: want}
+			e.state.Cache[p] = FileCache{MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: want, Raw: want}
 			mu.Unlock()
 		}
 		return nil
@@ -619,27 +675,7 @@ func firstLine(s string) string {
 	return s
 }
 
-func autoMessage(added, updated, deleted []string) string {
-	var parts []string
-	add := func(verb string, list []string) {
-		if len(list) == 0 {
-			return
-		}
-		names := make([]string, 0, 3)
-		for i, p := range list {
-			if i == 3 {
-				break
-			}
-			names = append(names, filepath.Base(p))
-		}
-		s := verb + " " + strings.Join(names, ", ")
-		if len(list) > 3 {
-			s += fmt.Sprintf(" (+%d more)", len(list)-3)
-		}
-		parts = append(parts, s)
-	}
-	add("Add", added)
-	add("Update", updated)
-	add("Delete", deleted)
-	return "EasyGit: " + strings.Join(parts, "; ")
+// timeMessage is the default commit message: just the moment of the commit.
+func timeMessage() string {
+	return time.Now().Format("2006-01-02 15:04:05")
 }

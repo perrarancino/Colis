@@ -94,6 +94,7 @@ const (
 	esMultiline   = 0x4
 	esPassword    = 0x20
 	esAutoVScroll = 0x40
+	esNumber      = 0x2000
 	wsVScroll     = 0x00200000
 	bsAutoCheck   = 0x3
 	bsOwnerDraw   = 0xB
@@ -121,6 +122,7 @@ const (
 	emScrollCrt  = 0x00B7
 	emCueBanner  = 0x1501
 	enChange     = 0x0300
+	enKillFocus  = 0x0200
 	swHide       = 0
 	swShow       = 5
 	swRestore    = 9
@@ -182,10 +184,10 @@ type msg struct {
 
 type drawItem struct {
 	CtlType, CtlID, ItemID, ItemAction, ItemState uint32
-	HwndItem                                       uintptr
-	HDC                                            uintptr
-	RcItem                                         rect
-	ItemData                                       uintptr
+	HwndItem                                      uintptr
+	HDC                                           uintptr
+	RcItem                                        rect
+	ItemData                                      uintptr
 }
 
 type iconInfo struct {

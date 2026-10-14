@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +26,8 @@ const (
 	idSync
 	idStatus
 	idAuto
+	idInterval
+	idIntervalLbl
 	idAutostart
 	idTray
 	idLog
@@ -33,17 +35,19 @@ const (
 )
 
 const (
-	wmRefresh  = wmApp + 2 // status/log changed (posted from workers)
-	wmFSChange = wmApp + 3 // watcher saw a change
-	wmTray     = wmApp + 1
-	wmAccount  = wmApp + 4 // sign-in finished
+	wmRefresh = wmApp + 2 // status/log changed (posted from workers)
+	wmPull    = wmApp + 3 // GitHub has new commits: pull them (never commits)
+	wmTray    = wmApp + 1
+	wmAccount = wmApp + 4 // sign-in finished
 )
 
 const (
-	timerDebounce = 1
-	timerPoll     = 2
-	debounceMs    = 4000
-	pollMs        = 45000
+	timerCommit = 1 // periodic auto-commit
+	timerPoll   = 2 // check GitHub for new commits
+	pollMs      = 45000
+
+	defaultIntervalMin = 10
+	maxIntervalMin     = 1440
 )
 
 const (
@@ -65,11 +69,9 @@ type App struct {
 	kind    int
 	logs    []string
 	syncing bool
-	dirty   bool // files changed while a sync was running
 	etag    string
 
-	watcher *Watcher
-	dpi     int
+	dpi int
 
 	bigIcon, smallIcon uintptr
 	brushWhite         uintptr
@@ -157,10 +159,10 @@ func (a *App) run(minimized bool) {
 	}
 
 	a.trayAdd()
-	a.restartWatcher()
 	call(pSetTimer, a.hwnd, timerPoll, pollMs, 0)
+	a.applyTimer()
 	if a.ready() == "" && a.cfg.AutoSync {
-		a.startSync() // catch up with GitHub on launch
+		a.startSync(true) // catch up with GitHub on launch (pull only)
 	} else {
 		a.setStatus(kindIdle, a.idleText())
 	}
@@ -225,12 +227,17 @@ func (a *App) build() {
 
 	a.label("COMMIT MESSAGE (OPTIONAL)", 242)
 	msgEdit := a.mk("EDIT", a.cfg.Message, wsTabstop|esAutoHScroll, wsExClientEdge, 24, 260, 352, 26, idMessage, 0)
-	sendMsg(msgEdit, emCueBanner, 1, uintptr(unsafe.Pointer(u16("automatic if empty"))))
+	sendMsg(msgEdit, emCueBanner, 1, uintptr(unsafe.Pointer(u16("current time if empty"))))
 
 	a.mk("BUTTON", "Commit & Sync", wsTabstop|bsOwnerDraw, 0, 24, 304, 352, 44, idSync, a.fonts.bold)
 	a.mk("STATIC", "", ssEndEllipsis, 0, 24, 360, 352, 20, idStatus, a.fonts.bold)
 
-	a.checkbox(idAuto, "Auto-sync: commit on every change, pull from GitHub", 392, a.cfg.AutoSync)
+	a.mk("BUTTON", "Auto-commit every", wsTabstop|bsAutoCheck, 0, 24, 392, 128, 22, idAuto, 0)
+	if a.cfg.AutoSync {
+		sendMsg(a.ctl[idAuto], bmSetCheck, 1, 0)
+	}
+	a.mk("EDIT", strconv.Itoa(a.interval()), wsTabstop|esAutoHScroll|esNumber, wsExClientEdge, 156, 390, 44, 24, idInterval, 0)
+	a.mk("STATIC", "min  ·  pulls from GitHub too", 0, 0, 208, 394, 168, 18, idIntervalLbl, a.fonts.normal)
 	a.checkbox(idAutostart, "Start with Windows", 416, a.cfg.Autostart)
 	a.checkbox(idTray, "Keep running in the tray when closed", 440, a.cfg.Tray)
 
@@ -331,9 +338,8 @@ func wndProc(hwnd, m uintptr, wp, lp uintptr) uintptr {
 
 	case wmTimer:
 		switch wp {
-		case timerDebounce:
-			call(pKillTimer, hwnd, timerDebounce)
-			a.startSync()
+		case timerCommit:
+			a.startSync(false)
 		case timerPoll:
 			go a.pollRemote()
 		}
@@ -343,16 +349,8 @@ func wndProc(hwnd, m uintptr, wp, lp uintptr) uintptr {
 		a.refresh()
 		return 0
 
-	case wmFSChange:
-		a.mu.Lock()
-		busy := a.syncing
-		if busy {
-			a.dirty = true
-		}
-		a.mu.Unlock()
-		if !busy && a.cfg.AutoSync {
-			call(pSetTimer, hwnd, timerDebounce, debounceMs, 0) // restarts the countdown
-		}
+	case wmPull:
+		a.startSync(true)
 		return 0
 
 	case wmAccount:
@@ -380,9 +378,6 @@ func wndProc(hwnd, m uintptr, wp, lp uintptr) uintptr {
 
 	case wmDestroy:
 		a.trayRemove()
-		if a.watcher != nil {
-			a.watcher.Stop()
-		}
 		call(pPostQuitMessage, 0)
 		return 0
 	}
@@ -396,7 +391,6 @@ func (a *App) onCommand(id, code uint32, lp uintptr) {
 			a.cfg.Folder = dir
 			a.saveCfg()
 			setText(a.ctl[idFolder], dir)
-			a.restartWatcher()
 			a.setStatus(kindIdle, a.idleText())
 		}
 
@@ -455,16 +449,28 @@ func (a *App) onCommand(id, code uint32, lp uintptr) {
 		a.logf("Signed out")
 
 	case idSync:
-		a.startSync()
+		a.startSync(false)
 
 	case idAuto:
 		a.cfg.AutoSync = sendMsg(a.ctl[idAuto], bmGetCheck, 0, 0) == 1
 		a.saveCfg()
-		a.restartWatcher()
-		if a.cfg.AutoSync && a.ready() == "" {
-			a.startSync()
-		} else {
-			a.setStatus(kindIdle, a.idleText())
+		a.applyTimer()
+		a.setStatus(kindIdle, a.idleText())
+
+	case idInterval:
+		switch code {
+		case enChange:
+			if !a.built {
+				return
+			}
+			if n, err := strconv.Atoi(strings.TrimSpace(getText(a.ctl[idInterval]))); err == nil && n >= 1 && n <= maxIntervalMin {
+				a.cfg.IntervalMin = n
+				a.saveCfg()
+				a.applyTimer()
+				a.setStatus(kindIdle, a.idleText())
+			}
+		case enKillFocus: // put a valid number back if the box was left empty or out of range
+			setText(a.ctl[idInterval], strconv.Itoa(a.interval()))
 		}
 
 	case idAutostart:
@@ -482,7 +488,7 @@ func (a *App) onCommand(id, code uint32, lp uintptr) {
 		call(pShowWindow, a.hwnd, swRestore)
 		call(pSetForegroundWindow, a.hwnd)
 	case 1002: // tray: sync
-		a.startSync()
+		a.startSync(false)
 	case 1003: // tray: exit
 		call(pDestroyWindow, a.hwnd)
 	}
@@ -588,7 +594,7 @@ func (a *App) idleText() string {
 		return why
 	}
 	if a.cfg.AutoSync {
-		return "Auto-sync is on"
+		return fmt.Sprintf("Auto-commit every %d min", a.interval())
 	}
 	return "Ready — press Commit & Sync"
 }
@@ -608,9 +614,29 @@ func (a *App) ready() string {
 
 // ---- syncing ---------------------------------------------------------------------
 
-func (a *App) startSync() {
+// interval returns the auto-commit period in minutes (always within 1..maxIntervalMin).
+func (a *App) interval() int {
+	if a.cfg.IntervalMin < 1 || a.cfg.IntervalMin > maxIntervalMin {
+		return defaultIntervalMin
+	}
+	return a.cfg.IntervalMin
+}
+
+// applyTimer (re)starts or stops the periodic commit timer from the settings.
+func (a *App) applyTimer() {
+	call(pKillTimer, a.hwnd, timerCommit)
+	if a.cfg.AutoSync {
+		call(pSetTimer, a.hwnd, timerCommit, uintptr(a.interval())*60*1000, 0)
+	}
+}
+
+// startSync runs one sync in the background. pullOnly=true only downloads what
+// GitHub has and never creates a commit.
+func (a *App) startSync(pullOnly bool) {
 	if why := a.ready(); why != "" {
-		a.setStatus(kindError, why)
+		if !pullOnly {
+			a.setStatus(kindError, why)
+		}
 		return
 	}
 	a.mu.Lock()
@@ -619,7 +645,6 @@ func (a *App) startSync() {
 		return
 	}
 	a.syncing = true
-	a.dirty = false
 	a.mu.Unlock()
 	a.setStatus(kindBusy, "Syncing…")
 
@@ -627,11 +652,11 @@ func (a *App) startSync() {
 	folder, branch, message, token := a.cfg.Folder, a.cfg.Branch, a.cfg.Message, a.token
 	go func() {
 		e := NewEngine(folder, owner, name, branch, token, a.logf)
+		e.PullOnly = pullOnly
 		res, err := e.Sync(message)
 
 		a.mu.Lock()
 		a.syncing = false
-		again := a.dirty
 		a.etag = "" // our own push moved the branch; start polling from here
 		a.mu.Unlock()
 
@@ -643,11 +668,14 @@ func (a *App) startSync() {
 				a.cfg.Branch = e.Branch
 				a.saveCfg()
 			}
-			a.logf(res.String())
+			if !(pullOnly && res.Nothing()) {
+				a.logf(res.String())
+			}
 			a.setStatus(kindOK, fmt.Sprintf("Synced at %s — %s", time.Now().Format("15:04"), res.String()))
-		}
-		if again && a.cfg.AutoSync {
-			postMsg(a.hwnd, wmFSChange, 0, 0)
+			if res.Commit != "" && message != "" && !pullOnly {
+				// A typed message belongs to that one commit; later commits get the time again.
+				sendMsg(a.ctl[idMessage], 0x000C, 0, uintptr(unsafe.Pointer(u16(""))))
+			}
 		}
 		postMsg(a.hwnd, wmRefresh, 0, 0)
 	}()
@@ -675,7 +703,7 @@ func (a *App) pollRemote() {
 	a.mu.Unlock()
 	if changed && etag != "" {
 		a.logf("GitHub has new commits")
-		postMsg(a.hwnd, wmFSChange, 0, 0)
+		postMsg(a.hwnd, wmPull, 0, 0)
 	}
 }
 
@@ -685,25 +713,6 @@ func shorten(s string, n int) string {
 		return string(r[:n-1]) + "…"
 	}
 	return string(r)
-}
-
-func (a *App) restartWatcher() {
-	if a.watcher != nil {
-		a.watcher.Stop()
-		a.watcher = nil
-	}
-	if !a.cfg.AutoSync || a.cfg.Folder == "" {
-		return
-	}
-	if st, err := os.Stat(a.cfg.Folder); err != nil || !st.IsDir() {
-		return
-	}
-	w, err := StartWatcher(filepath.Clean(a.cfg.Folder), func() { postMsg(a.hwnd, wmFSChange, 0, 0) })
-	if err != nil {
-		a.logf("Cannot watch folder: " + err.Error())
-		return
-	}
-	a.watcher = w
 }
 
 // ---- tray ------------------------------------------------------------------------

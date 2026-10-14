@@ -41,18 +41,24 @@ repository — no Git, .NET or any other runtime needed (a single ~6 MB `EasyGit
 2. Enter the repository (`owner/name` or its URL).
 3. Sign in: press **Get token**, create a token with the `repo` scope, paste it, press **Sign in**.
    The token is stored encrypted with Windows DPAPI (only your Windows account can read it).
-4. Press **Commit & Sync**, or turn on **Auto-sync**.
+4. Press **Commit & Sync**, or tick **Auto-commit every N min**.
 
 What it does:
 
-- **Auto-sync on** — every file change is committed (after 4 s of quiet) and GitHub is polled every
-  45 s with a conditional request, so new commits made elsewhere are pulled automatically.
-- **Auto-sync off** — nothing happens until you press the button.
+- **Commit button** — **Commit & Sync** pulls what is new on GitHub and commits your changes right away.
+- **Auto-commit every N min** (default 10, tick the box to enable) — on that timer your changes are
+  committed in one commit, and GitHub is polled every 45 s with a conditional request so commits
+  made elsewhere are pulled automatically. The timer only pulls in between; it never commits earlier.
+  With the box unticked nothing happens until you press the button.
+- **Commit message** — if the field is empty the message is simply the time of the commit
+  (`2026-10-14 20:57:40`). A message you type is used for the next commit only.
 - **Only the differences travel.** Files are compared by their Git blob hash; unchanged files are
   never downloaded or uploaded again. A pull fetches just the changed blobs, a commit uploads just the
   changed files as a single commit.
 - A real three-way comparison (local / last sync / GitHub). If the same file changed on both sides,
   GitHub's version wins and yours is kept next to it as `name.conflict-<time>.ext`.
+- Text files are compared with CRLF turned into LF (like Git's `autocrlf`), so a Windows checkout is not
+  seen as modified and is committed with LF line endings.
 - `.gitignore` is respected. `.git`, `*.conflict-*` and temporary files are never synced.
 - Optional: start with Windows, keep running in the tray.
 

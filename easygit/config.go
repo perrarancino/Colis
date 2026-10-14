@@ -14,14 +14,15 @@ import (
 )
 
 type Config struct {
-	Folder    string `json:"folder"`
-	Repo      string `json:"repo"` // owner/name
-	Branch    string `json:"branch"`
-	Message   string `json:"message"`
-	User      string `json:"user"`
-	AutoSync  bool   `json:"autoSync"`
-	Autostart bool   `json:"autostart"`
-	Tray      bool   `json:"tray"`
+	Folder      string `json:"folder"`
+	Repo        string `json:"repo"` // owner/name
+	Branch      string `json:"branch"`
+	Message     string `json:"message"`
+	User        string `json:"user"`
+	AutoSync    bool   `json:"autoSync"` // commit on a timer
+	IntervalMin int    `json:"intervalMin"`
+	Autostart   bool   `json:"autostart"`
+	Tray        bool   `json:"tray"`
 }
 
 func dataDir() string {
@@ -35,7 +36,7 @@ func dataDir() string {
 }
 
 func LoadConfig() Config {
-	c := Config{Tray: true}
+	c := Config{Tray: true, IntervalMin: 10}
 	if b, err := os.ReadFile(filepath.Join(dataDir(), "config.json")); err == nil {
 		_ = json.Unmarshal(b, &c)
 	}
@@ -107,7 +108,8 @@ type Entry struct {
 type FileCache struct {
 	MTime int64  `json:"mtime"`
 	Size  int64  `json:"size"`
-	SHA   string `json:"sha"`
+	SHA   string `json:"sha"`           // hash of the content with CRLF normalised to LF
+	Raw   string `json:"raw,omitempty"` // hash of the bytes exactly as on disk
 }
 
 // State remembers what the last successful sync looked like: it is the "base"
