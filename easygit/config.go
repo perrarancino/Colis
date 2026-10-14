@@ -22,6 +22,7 @@ type Config struct {
 	AutoSync    bool   `json:"autoSync"` // commit on a timer
 	IntervalMin int    `json:"intervalMin"`
 	Autostart   bool   `json:"autostart"`
+	SyncOnStart bool   `json:"syncOnStart"` // pull from GitHub when the program starts
 	Tray        bool   `json:"tray"`
 }
 
@@ -36,7 +37,7 @@ func dataDir() string {
 }
 
 func LoadConfig() Config {
-	c := Config{Tray: true, IntervalMin: 10}
+	c := Config{Tray: true, IntervalMin: 10, SyncOnStart: true}
 	if b, err := os.ReadFile(filepath.Join(dataDir(), "config.json")); err == nil {
 		_ = json.Unmarshal(b, &c)
 	}

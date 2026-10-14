@@ -32,6 +32,8 @@ const (
 	idTray
 	idLog
 	idAccount
+	idCommit
+	idSyncStart
 )
 
 const (
@@ -143,7 +145,7 @@ func (a *App) run(minimized bool) {
 	call(pRegisterClassEx, uintptr(unsafe.Pointer(&wc)))
 
 	style := uint32(wsCaption | wsSysmenu | wsMinimizebox | wsClipChildren)
-	cw, ch := 400, 566
+	cw, ch := 400, 584
 	r := rect{0, 0, int32(a.sc(cw)), int32(a.sc(ch))}
 	call(pAdjustWindowRectDpi, uintptr(unsafe.Pointer(&r)), uintptr(style), 0, wsExControlPar, uintptr(a.dpi))
 	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
@@ -161,7 +163,7 @@ func (a *App) run(minimized bool) {
 	a.trayAdd()
 	call(pSetTimer, a.hwnd, timerPoll, pollMs, 0)
 	a.applyTimer()
-	if a.ready() == "" && a.cfg.AutoSync {
+	if a.ready() == "" && a.cfg.SyncOnStart {
 		a.startSync(true) // catch up with GitHub on launch (pull only)
 	} else {
 		a.setStatus(kindIdle, a.idleText())
@@ -229,7 +231,8 @@ func (a *App) build() {
 	msgEdit := a.mk("EDIT", a.cfg.Message, wsTabstop|esAutoHScroll, wsExClientEdge, 24, 260, 352, 26, idMessage, 0)
 	sendMsg(msgEdit, emCueBanner, 1, uintptr(unsafe.Pointer(u16("current time if empty"))))
 
-	a.mk("BUTTON", "Commit & Sync", wsTabstop|bsOwnerDraw, 0, 24, 304, 352, 44, idSync, a.fonts.bold)
+	a.mk("BUTTON", "Sync", wsTabstop|bsOwnerDraw, 0, 24, 304, 172, 44, idSync, a.fonts.bold)
+	a.mk("BUTTON", "Commit", wsTabstop|bsOwnerDraw, 0, 204, 304, 172, 44, idCommit, a.fonts.bold)
 	a.mk("STATIC", "", ssEndEllipsis, 0, 24, 360, 352, 20, idStatus, a.fonts.bold)
 
 	a.mk("BUTTON", "Auto-commit every", wsTabstop|bsAutoCheck, 0, 24, 392, 128, 22, idAuto, 0)
@@ -238,10 +241,11 @@ func (a *App) build() {
 	}
 	a.mk("EDIT", strconv.Itoa(a.interval()), wsTabstop|esAutoHScroll|esNumber, wsExClientEdge, 156, 390, 44, 24, idInterval, 0)
 	a.mk("STATIC", "min  ·  pulls from GitHub too", 0, 0, 208, 394, 168, 18, idIntervalLbl, a.fonts.normal)
-	a.checkbox(idAutostart, "Start with Windows", 416, a.cfg.Autostart)
-	a.checkbox(idTray, "Keep running in the tray when closed", 440, a.cfg.Tray)
+	a.checkbox(idSyncStart, "Sync with GitHub when the program starts", 416, a.cfg.SyncOnStart)
+	a.checkbox(idAutostart, "Start with Windows", 440, a.cfg.Autostart)
+	a.checkbox(idTray, "Keep running in the tray when closed", 464, a.cfg.Tray)
 
-	a.mk("EDIT", "", wsTabstop|esMultiline|esReadonly|wsVScroll|esAutoVScroll, 0, 24, 476, 352, 70, idLog, a.fonts.mono)
+	a.mk("EDIT", "", wsTabstop|esMultiline|esReadonly|wsVScroll|esAutoVScroll, 0, 24, 500, 352, 62, idLog, a.fonts.mono)
 	a.applyAccount()
 	a.built = true
 }
@@ -331,8 +335,8 @@ func wndProc(hwnd, m uintptr, wp, lp uintptr) uintptr {
 
 	case wmDrawItem:
 		di := (*drawItem)(unsafe.Pointer(lp))
-		if di.CtlID == idSync {
-			a.drawSyncButton(di)
+		if di.CtlID == idSync || di.CtlID == idCommit {
+			a.drawButton(di)
 			return 1
 		}
 
@@ -449,7 +453,14 @@ func (a *App) onCommand(id, code uint32, lp uintptr) {
 		a.logf("Signed out")
 
 	case idSync:
-		a.startSync(false)
+		a.startSync(true) // pull only
+
+	case idCommit:
+		a.startSync(false) // pull, then commit and push local changes
+
+	case idSyncStart:
+		a.cfg.SyncOnStart = sendMsg(a.ctl[idSyncStart], bmGetCheck, 0, 0) == 1
+		a.saveCfg()
 
 	case idAuto:
 		a.cfg.AutoSync = sendMsg(a.ctl[idAuto], bmGetCheck, 0, 0) == 1
@@ -488,6 +499,8 @@ func (a *App) onCommand(id, code uint32, lp uintptr) {
 		call(pShowWindow, a.hwnd, swRestore)
 		call(pSetForegroundWindow, a.hwnd)
 	case 1002: // tray: sync
+		a.startSync(true)
+	case 1004: // tray: commit
 		a.startSync(false)
 	case 1003: // tray: exit
 		call(pDestroyWindow, a.hwnd)
@@ -502,13 +515,27 @@ func (a *App) saveCfg() {
 
 // ---- drawing ---------------------------------------------------------------------
 
-func (a *App) drawSyncButton(di *drawItem) {
-	fill := colAccent
-	switch {
-	case di.ItemState&odsDisabled != 0:
-		fill = rgb(0x94, 0xd3, 0xa2)
-	case di.ItemState&odsSelected != 0:
-		fill = rgb(0x1f, 0x88, 0x3d)
+// drawButton paints the flat rounded Sync (grey) and Commit (green) buttons.
+func (a *App) drawButton(di *drawItem) {
+	disabled := di.ItemState&odsDisabled != 0
+	pressed := di.ItemState&odsSelected != 0
+	var fill, text uintptr
+	if di.CtlID == idCommit {
+		fill, text = colAccent, rgb(255, 255, 255)
+		switch {
+		case disabled:
+			fill = rgb(0x94, 0xd3, 0xa2)
+		case pressed:
+			fill = rgb(0x1f, 0x88, 0x3d)
+		}
+	} else {
+		fill, text = rgb(0xea, 0xee, 0xf2), colText
+		switch {
+		case disabled:
+			fill, text = rgb(0xf3, 0xf4, 0xf6), rgb(0xa0, 0xa7, 0xb0)
+		case pressed:
+			fill = rgb(0xd0, 0xd7, 0xde)
+		}
 	}
 	call(pFillRect, di.HDC, uintptr(unsafe.Pointer(&di.RcItem)), a.brushWhite)
 	br := call(pCreateSolidBrush, fill)
@@ -521,10 +548,9 @@ func (a *App) drawSyncButton(di *drawItem) {
 	call(pDeleteObject, br)
 
 	call(pSetBkMode, di.HDC, transparent)
-	call(pSetTextColor, di.HDC, rgb(255, 255, 255))
+	call(pSetTextColor, di.HDC, text)
 	old := call(pSelectObject, di.HDC, a.fonts.bold)
-	text := getText(di.HwndItem)
-	buf := utf16(text)
+	buf := utf16(getText(di.HwndItem))
 	call(pDrawText, di.HDC, uintptr(unsafe.Pointer(&buf[0])), ^uintptr(0), uintptr(unsafe.Pointer(&di.RcItem)), dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	call(pSelectObject, di.HDC, old)
 }
@@ -573,18 +599,12 @@ func (a *App) refresh() {
 		sendMsg(a.ctl[idLog], emScrollCrt, 0, 0)
 	}
 
-	label := "Commit & Sync"
-	if busy {
-		label = "Syncing…"
-	}
-	if getText(a.ctl[idSync]) != label {
-		setText(a.ctl[idSync], label)
-	}
 	enable := uintptr(1)
 	if busy {
 		enable = 0
 	}
 	call(pEnableWindow, a.ctl[idSync], enable)
+	call(pEnableWindow, a.ctl[idCommit], enable)
 	a.trayTip(status)
 	_ = kind
 }
@@ -596,7 +616,7 @@ func (a *App) idleText() string {
 	if a.cfg.AutoSync {
 		return fmt.Sprintf("Auto-commit every %d min", a.interval())
 	}
-	return "Ready — press Commit & Sync"
+	return "Ready"
 }
 
 // ready returns what is still missing before a sync can run ("" when ready).
@@ -646,7 +666,11 @@ func (a *App) startSync(pullOnly bool) {
 	}
 	a.syncing = true
 	a.mu.Unlock()
-	a.setStatus(kindBusy, "Syncing…")
+	if pullOnly {
+		a.setStatus(kindBusy, "Syncing…")
+	} else {
+		a.setStatus(kindBusy, "Committing…")
+	}
 
 	owner, name, _ := SplitRepo(a.cfg.Repo)
 	folder, branch, message, token := a.cfg.Folder, a.cfg.Branch, a.cfg.Message, a.token
@@ -662,16 +686,24 @@ func (a *App) startSync(pullOnly bool) {
 
 		if err != nil {
 			a.logf("Error: " + err.Error())
-			a.setStatus(kindError, "Sync failed — "+shorten(err.Error(), 60))
+			a.setStatus(kindError, "Failed — "+shorten(err.Error(), 60))
 		} else {
 			if a.cfg.Branch == "" && e.Branch != "" {
 				a.cfg.Branch = e.Branch
 				a.saveCfg()
 			}
-			if !(pullOnly && res.Nothing()) {
-				a.logf(res.String())
+			if !(pullOnly && res.Nothing() && res.Pending == 0) {
+				a.logf(res.Summary(pullOnly))
 			}
-			a.setStatus(kindOK, fmt.Sprintf("Synced at %s — %s", time.Now().Format("15:04"), res.String()))
+			when := time.Now().Format("15:04")
+			switch {
+			case pullOnly:
+				a.setStatus(kindOK, fmt.Sprintf("Synced at %s — %s", when, res.Summary(true)))
+			case res.Commit != "":
+				a.setStatus(kindOK, fmt.Sprintf("Committed at %s — %s", when, res.Summary(false)))
+			default:
+				a.setStatus(kindIdle, fmt.Sprintf("%s (%s)", res.Summary(false), when))
+			}
 			if res.Commit != "" && message != "" && !pullOnly {
 				// A typed message belongs to that one commit; later commits get the time again.
 				sendMsg(a.ctl[idMessage], 0x000C, 0, uintptr(unsafe.Pointer(u16(""))))
@@ -744,7 +776,8 @@ func (a *App) trayRemove() {
 func (a *App) trayMenu() {
 	menu := call(pCreatePopupMenu)
 	call(pAppendMenu, menu, mfString, 1001, uintptr(unsafe.Pointer(u16("Open"))))
-	call(pAppendMenu, menu, mfString, 1002, uintptr(unsafe.Pointer(u16("Commit && Sync now"))))
+	call(pAppendMenu, menu, mfString, 1002, uintptr(unsafe.Pointer(u16("Sync now"))))
+	call(pAppendMenu, menu, mfString, 1004, uintptr(unsafe.Pointer(u16("Commit now"))))
 	call(pAppendMenu, menu, mfSeparator, 0, 0)
 	call(pAppendMenu, menu, mfString, 1003, uintptr(unsafe.Pointer(u16("Exit"))))
 	var p point

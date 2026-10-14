@@ -41,11 +41,15 @@ repository — no Git, .NET or any other runtime needed (a single ~6 MB `EasyGit
 2. Enter the repository (`owner/name` or its URL).
 3. Sign in: press **Get token**, create a token with the `repo` scope, paste it, press **Sign in**.
    The token is stored encrypted with Windows DPAPI (only your Windows account can read it).
-4. Press **Commit & Sync**, or tick **Auto-commit every N min**.
+4. Press **Sync** to pull, **Commit** to commit, or tick **Auto-commit every N min**.
 
 What it does:
 
-- **Commit button** — **Commit & Sync** pulls what is new on GitHub and commits your changes right away.
+- **Sync** — downloads what is new on GitHub (only the changed files) and tells you how many local
+  changes are still waiting to be committed. It never creates a commit.
+- **Commit** — pulls first, then uploads your local changes as one commit. If there is nothing to
+  commit it says so ("Nothing to commit, no local changes").
+- **Sync with GitHub when the program starts** (on by default) — a Sync as soon as Easy Git launches.
 - **Auto-commit every N min** (default 10, tick the box to enable) — on that timer your changes are
   committed in one commit, and GitHub is polled every 45 s with a conditional request so commits
   made elsewhere are pulled automatically. The timer only pulls in between; it never commits earlier.

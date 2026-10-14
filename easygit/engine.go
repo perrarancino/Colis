@@ -34,10 +34,27 @@ type SyncResult struct {
 	Deleted   int // files deleted in the new commit
 	Conflicts []string
 	Commit    string
+	Pending   int // local changes found but not committed (pull-only sync)
 }
 
 func (r SyncResult) Nothing() bool {
 	return r.Pulled == 0 && r.Removed == 0 && r.Pushed == 0 && r.Deleted == 0
+}
+
+// Summary words the result for the status line. pullOnly says which button was used.
+func (r SyncResult) Summary(pullOnly bool) string {
+	s := r.String()
+	if r.Nothing() {
+		if pullOnly {
+			s = "Up to date with GitHub"
+		} else {
+			s = "Nothing to commit, no local changes"
+		}
+	}
+	if pullOnly && r.Pending > 0 {
+		s += fmt.Sprintf(" · %d local change(s) not committed yet", r.Pending)
+	}
+	return s
 }
 
 func (r SyncResult) String() string {
@@ -116,7 +133,7 @@ func (e *Engine) Sync(message string) (SyncResult, error) {
 		total.Removed += res.Removed
 		total.Conflicts = append(total.Conflicts, res.Conflicts...)
 		if err == nil {
-			total.Pushed, total.Deleted, total.Commit = res.Pushed, res.Deleted, res.Commit
+			total.Pushed, total.Deleted, total.Commit, total.Pending = res.Pushed, res.Deleted, res.Commit, res.Pending
 			return total, nil
 		}
 		if errors.Is(err, ErrNotFastForward) || errors.Is(err, errRetry) {
@@ -221,6 +238,7 @@ func (e *Engine) reconcile(res SyncResult, base, remote map[string]Entry, messag
 			}
 		}
 	}
+	res.Pending = len(pushes) + len(deletes)
 	sort.Strings(downloads)
 	sort.Strings(removals)
 	sort.Strings(deletes)
@@ -264,7 +282,7 @@ func (e *Engine) reconcile(res SyncResult, base, remote map[string]Entry, messag
 	if err != nil {
 		return res, err
 	}
-	res.Pushed, res.Deleted, res.Commit = len(pushes), len(deletes), commit
+	res.Pushed, res.Deleted, res.Commit, res.Pending = len(pushes), len(deletes), commit, 0
 	return res, nil
 }
 
